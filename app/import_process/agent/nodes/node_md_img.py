@@ -101,7 +101,10 @@ def step_1_get_content(state: ImportGraphState) -> Tuple[str, Path, Path]:
         md_content = f.read()      # 2. 阅读并抄写里面的内容
         f.close()                  # 3. 必须手动把古籍还给管理员！
         """
-
+    # Todo: AI加了下面三行，用于测试main_graph。
+    else:
+        # 如果 state 中已经有 md_content，直接使用
+        md_content = state['md_content']
     # 图片文件夹obj
     # 注意：自己传入的md -》 你的图片文件夹也必须交 images
     images_dir_obj = md_path_obj.parent / "images"

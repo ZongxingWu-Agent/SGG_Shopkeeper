@@ -74,3 +74,72 @@ workflow.add_edge("node_import_milvus",END)
 kb_import_app = workflow.compile()
 
 
+if __name__ == "__main__":
+    from app.utils.path_util import PROJECT_ROOT
+    import os
+
+    # 全流程测试：验证 PDF 导入→Milvus入库完整链路（暂时跳过 KG 导入）
+    logger.info("===== 开始执行知识图谱导入全流程测试 =====")
+    # 1. 构造测试文件路径（复用你项目的 doc 目录，和 pdf2md 测试文件一致）
+    test_pdf_name = os.path.join("doc", "万用表RS-12的使用.pdf")
+    test_pdf_path = os.path.join(PROJECT_ROOT, test_pdf_name)
+    # 2. 构造输出目录（存放 MD/图片等中间文件）
+    test_output_dir = os.path.join(PROJECT_ROOT, "output")
+    os.makedirs(test_output_dir, exist_ok=True)  # 不存在则创建
+
+    # 3. 校验测试 PDF 文件是否存在
+    if not os.path.exists(test_pdf_path):
+        logger.error(f"全流程测试失败：测试 PDF 文件不存在，路径：{test_pdf_path}")
+        logger.info("请检查文件路径，或手动将测试文件放入项目根目录的 doc 文件夹中")
+    else:
+        # 4. 构造测试状态（贴合实际业务入参，开启 PDF 解析开关）
+        test_state = ImportGraphState({
+            "task_id": "test_kg_import_workflow_001",  # 测试任务 ID
+            "user_id": "test_user",  # 测试用户 ID
+            "local_file_path": test_pdf_path,  # 测试 PDF 文件路径
+            "local_dir": test_output_dir,  # 中间文件输出目录
+            "is_pdf_read_enabled": True,  # 开启 PDF 解析（核心开关）
+            "is_md_read_enabled": False  # 关闭 MD 解析
+        })
+        try:
+            logger.info(f"测试任务启动，PDF 文件路径：{test_pdf_path}")
+            logger.info(f"中间文件输出目录：{test_output_dir}")
+            logger.info("开始执行全流程节点，依次执行：entry→pdf2md→md_img→split→item_name→embedding→milvus")
+
+            # 5. 执行 LangGraph 全流程（流式执行，打印节点执行进度）
+            final_state = None
+            for step in kb_import_app.stream(test_state, stream_mode="values"):
+                # 打印当前执行完成的节点（流式输出更直观）
+                current_node = list(step.keys())[-1] if step else "未知节点"
+                logger.info(f"✅ 节点执行完成：{current_node}")
+                final_state = step  # 保存最终状态
+
+            # 6. 全流程执行完成，结果预览和核心指标打印
+            if final_state:
+                logger.info("-" * 80)
+                logger.info("===== 全流程测试执行成功，核心结果预览 =====")
+                # 提取核心结果指标
+                chunks = final_state.get("chunks", [])
+                chunk_count = len(chunks)
+                # 安全访问 md_content，避免变量未定义错误
+                md_content_value = final_state.get("md_content", "")
+                md_content_preview = md_content_value[:150] if md_content_value else "未生成"  # MD 内容前 150 字符
+                has_embedding = all("dense_vector" in c and "sparse_vector" in c for c in chunks) if chunks else False
+                has_chunk_id = all("chunk_id" in c for c in chunks) if chunks else False
+
+                # 打印核心指标
+                logger.info(f"📄 PDF 转 MD 内容预览（前 150 字符）：{md_content_preview}...")
+                logger.info(f"📝 文档切分总切片数：{chunk_count}")
+                logger.info(f"🔍 所有切片是否完成向量化：{'是' if has_embedding else '否'}")
+                logger.info(f"🗄️  所有切片是否完成 Milvus入库（含 chunk_id）：{'是' if has_chunk_id else '否'}")
+                logger.info(f"📂 最终状态包含的核心键：{list(final_state.keys())}")
+                logger.info("-" * 80)
+
+        except Exception as e:
+            # 7. 异常捕获，打印详细错误信息
+            logger.error(f"===== 全流程测试运行失败 =====")
+            logger.error(f"异常类型：{type(e).__name__}")
+            logger.error(f"异常原因：{str(e)}")
+            import traceback
+            logger.error(f"完整堆栈：{traceback.format_exc()}")
+    logger.info("===== 知识图谱导入全流程测试结束 =====")
