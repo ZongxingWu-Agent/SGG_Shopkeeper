@@ -140,26 +140,20 @@ def find_image_in_md_content(md_content, image_file, context_length: int = 100):
     # 给个模版（通缉令）
     pattern = re.compile(r"!\[.*?\]\(.*?" + image_file + ".*?\)")
 
-    # results = []  # 存储图片多处使用，上下文不同 ！ 本次暴力处理，获取第一个！
     content = None
     # 查询符合位置
     # 拿着模版去md_content中找出现的位置
-    # 注意：finditer不会找到一个就停下，此处写死只要第一个
-    # pattern.finditer->执行结果： 它找到了两个目标，排成了队伍交给 for 循环：
-         # 1号目标：![大猫](cat.png)
-         # 2号目标：![小猫](cat.png)
+    # 注意：finditer不会找到一个就停下，此处写死只要第一个。
     items = list(pattern.finditer(md_content))
     if not items:
         return None
-    # for item in pattern.finditer(md_content):
     if item := items[0]:
         start, end = item.span()  # span获取匹配对象的起始和终止的位置
-        # 截取上文
+        # 4. 以图片为中心，向前切 100 个字（作为上文），向后切 100 个字（作为下文）
+        # max 和 min 是为了防止切到文章边界外报错
         pre_text = md_content[max(start - context_length, 0):start]  # 考虑前面有没有context_length 没有从0开始
         post_text = md_content[end:min(end + context_length, len(md_content))]  # 考虑后面有没有context_length 没有就到长度
-        # 截取下文
-        # results->列表变成了：[("我看到", "在睡觉。")]
-        # results.append((pre_text, post_text))
+        # 将上下文字符串打包成元组
         content = (pre_text, post_text)
     # 截取位置前后的内容
     if content:
@@ -185,18 +179,21 @@ def step_2_scan_images(md_content: str, images_dir_obj: Path) -> List[Tuple[str,
     # os.listdir()->['cat.png', 'dog.jpg', 'readme.txt', '新文件夹']
     for image_file in os.listdir(images_dir_obj):
         # 遍历每个文件的名字
-        # 检查图片是否可用 -》 图片
+        # 过滤掉非图片文件（比如隐藏文件）
         if not is_supported_image(image_file):
             logger.warning(f"当前文件：{image_file},不是图片格式，无需处理！")
             continue
         # 是图片，我们就在md查询，看是否存在，存在，读取对应的上下文即可
         # （上，下文）
+        # find_image_in_md_content返回值 -> 元组content = (pre_text, post_text)
+        # content_data = content = (pre_text, post_text)
         content_data = find_image_in_md_content(md_content, image_file)
         if not content_data:
             logger.warning(f"图片：{image_file}没有在md内容使用！上下文为空！")
             continue
-                        # [(图片名，图片地址，上下文元组(上文，下文))]
-                                      # Path("D:/项目/images") / "cat.png" -> Path("D:/项目/images/cat.png")
+        # targets：[(图片名，图片地址，上下文元组(上文，下文))]
+        # images_dir_obj = "/output/20260404/task_abc123/小米汽车SU7说明书/images"（字符串）
+        # str(images_dir_obj / image_file) = Path(images_dir_obj) / "cat.png"
         targets.append((image_file, str(images_dir_obj / image_file), content_data))
 
     return targets
@@ -277,11 +274,12 @@ def step_3_generate_img_summaries(targets, stem):
     使用 LangChain 流水线重构的图片总结函数
     """
     summaries = {}
+    # 用于记录请求时间，防止被 API 封锁
     request_times = deque()
 
     # 【亮点 1：在循环外，提前搭建好一条固定的“处理流水线”】
-
     # 1. 制造“模具”：定义好包含图片和文字的结构化消息模板
+    # 制造 LangChain 模具：定义好大模型接收的多模态消息格式（包含一张图 + 一段字）
     chat_template = ChatPromptTemplate.from_messages([
         ("user", [
             # 告诉 LangChain 这里有个坑位叫 img_base64，它是一张图片
@@ -291,32 +289,43 @@ def step_3_generate_img_summaries(targets, stem):
         ])
     ])
 
-    # 2. 请出专家
+    # 2. 获取你配置的视觉大模型客户端（如千问VL）
     vm_model = get_llm_client(model=lm_config.lv_model)
 
     # 3. 拼装传送带 (LCEL语法)： 模板拼装 -> 交给大模型 -> 自动提取纯文本
-    # 这里的 `|` 就像水管一样，把三个组件连了起来
+    # 组装神级流水线： 模具拼装 | 送入大模型 | 把大模型的胡言乱语剥离成纯文本
     chain = chat_template | vm_model | StrOutputParser()
 
     # 开始批量处理物证
+    # targets：[(图片名，图片地址，上下文元组(上文，下文))]
     for image_file, image_path, context in targets:
-        apply_api_rate_limit(request_times, max_requests=9)
+        apply_api_rate_limit(request_times, max_requests=9) # 限速控制
 
         # 准备材料 1：将图片转为 base64 乱码
+        # 将本地的二进制图片，强行转化为大模型能看懂的 base64 超长乱码字符串
+        # image_path = "/output/20260404/task_abc123/小米汽车SU7说明书/images/cat.png"（字符串）
         with open(image_path, "rb") as f:
             image_base64 = base64.b64encode(f.read()).decode("utf-8")
 
         # 准备材料 2：继续使用你们优雅的 load_prompt 加载外部文字话术
+        # 加载提示词：告诉大模型“结合以下上下文，总结这张图”
+        # content = (pre_text, post_text)
+        # root_folder=stem中的stem为：md_path_obj.stem -> 小米汽车SU7说明书
+        # md_path_obj = Path("/output/20260404/task_abc123/小米汽车SU7说明书/小米汽车SU7说明书.md")
+        # 即：text_prompt -> 这是“{小米汽车SU7说明书}”文件中的一张图片，图片上文部分为“{image_content[0]}”，
+        # 下文部分为“{image_content[1]}”，请用中文简要总结这张图片的内容，用于 Markdown 图片标题，控制在50字以内。
         text_prompt = load_prompt("image_summary", root_folder=stem, image_content=context)
-
-        # 【亮点 2：一键启动流水线】
-        # 把两样材料作为字典扔进流水线，连 messages 列表都不用自己手写了！
+        # 一键触发流水线，把变量塞进模具！
         summary = chain.invoke({
             "img_base64": image_base64,
             "text_prompt": text_prompt
         })
 
         # 此时得到的 summary 已经是干净的字符串了，只需要简单去个回车
+        # summary 的真实面目只是一个 String ->
+           # summary = "图中展示了小米SU7车门侧面的半隐藏式门把手结构..."
+        # 去掉回车换行，并存入字典:summaries
+        # 格式为 {"su7.jpg": "图中展示了小米SU7车门侧面的半隐藏式门把手结构..."}
         summary = summary.strip().replace("\n", "")
         summaries[image_file] = summary
         logger.info(f"图片：{image_file}，总结结果：{summary}")
@@ -326,8 +335,8 @@ def step_3_generate_img_summaries(targets, stem):
 
 def step_4_upload_images_and_replace_md(summaries, targets, md_content, stem):
     """
-      将我们图片传递到minio服务器
-      替换原md中的图片和描述
+    将我们图片传递到minio服务器
+    替换原md中的图片和描述
     :param summaries:  图片名 ： 描述
     :param targets:  （图片名，原地址，（上，下））
     :param md_content: 原md内容
@@ -336,11 +345,13 @@ def step_4_upload_images_and_replace_md(summaries, targets, md_content, stem):
     """
     # 理解minio存储结果： 桶 / upload-images / 文件夹名字 / 图片对象.jpg
     minio_client = get_minio_client()
+    # ------------------- 动作1：清理旧资产 ------------------
     # 1.  删除minio中的对应文件的图片
     # 1.1 获取要删除的对象
     # Object object_name
     # 注意：{minio_config.minio_img_dir[1:]}  一定要去掉一个 /
-    """总管家带着案卷代号 "hak180产品安全手册"，
+    """
+    总管家带着案卷代号 "hak180产品安全手册"，
     去 MinIO 仓库里找对应的专属货架（prefix 路径）。
     把货架上旧的 warning.png 统统打包到 delete_object_list 垃圾袋里，
     直接一把火烧掉（remove_objects）。打扫出一个干干净净的新货架
@@ -355,50 +366,76 @@ def step_4_upload_images_and_replace_md(summaries, targets, md_content, stem):
     errors = minio_client.remove_objects(minio_config.bucket_name,delete_object_list)
     for errors in errors:
         logger.error(f"删除对象失败：{errors}")
-
     logger.info(f"已经完成{stem}下的对象清空，本次删除了：{len(delete_object_list)}个对象！！！")
 
+    # ------------------ - 动作2：上传图片 --------------
     # 2. 上传图片到minio服务器
-    # 声明记录图片上传结果的字典
-
-    # images_url 变成了：
-    # {"warning.png": "http://192.168.1.100:9000/bucket/upload-images/hak180产品安全手册/warning.png"}
+    # 记录图片上传结果的字典
     images_url = {}
-    # targets:  （图片名，原地址，（上，下））
+    # targets:[（图片名，原地址，（上，下））,（图片名，原地址，（上，下））]
+    """
+    [
+        ("su7_door.jpg", "D:/.../su7_door.jpg", (...)), 
+        ("su7_front.jpg", "D:/.../su7_front.jpg", (...))
+    ]
+    """
     for image_file,image_path, _ in targets:
         try:
+            # 把本地图片传到云端桶里
             minio_client.fput_object(
                 bucket_name= minio_config.bucket_name,
                 object_name= f"{minio_config.minio_img_dir}/{stem}/{image_file}", # 传入minio 桶后面的命名  xx.png  xx/xxx/xx.png
                 file_path= image_path,
                 content_type="image/jpeg"
             )
-            # 上传完毕以后记录
+            # 拼接出可通过公网访问的 URL
             # 图片地址 = 协议 + 端点 + 桶名 + 对象名  http://47.94.86.115:9000/ 桶名 / 对象名
+            """
+                images_url = {
+                    "su7_door.jpg": "http://minio.../小米汽车SU7说明书/su7_door.jpg",
+                    "su7_front.jpg": "http://minio.../小米汽车SU7说明书/su7_front.jpg"
+                }
+            """
             images_url[image_file] = f"http://{minio_config.endpoint}/{minio_config.bucket_name}{minio_config.minio_img_dir}/{stem}/{image_file}"
             logger.info(f"完成图片{image_file}上传，访问地址为：{images_url[image_file]}")
         except Exception as e:
             logger.error(f"上传图片失败：{image_file}，失败原因：{e}")
 
-    # 3. md中图片的替换即可
-    # summaries = 图片名: 描述
-    # images_url= 图片名：url地址
-    # 汇总： {图片名:(描述,url地址)}
-
-    #image_infos 变成了终极替换清单：
-    # {"warning.png": ("图中是一个红色的三角形警告标志...", "http://192.168.1.100:9000/.../warning.png")}
+    # ---------- 动作3：偷天换日（替换 Markdown 中的图片内容） ---------
+    # 有了AI总结（summaries），也有了云端地址（images_url），代码需要把它们“合二为一”
+      # image_file：图片名
+      # summary：图片描述总结
+    # summaries  -> {image_file：summary}
+    # images_url -> {image_file：url}
     image_infos = {}
+    # 把总结文字和云端 URL 揉合在一起
     for image_file, summary in summaries.items():
+        # 如果这个图片既有总结，又成功上传到了云端（url := images_url.get(image_file)为真）
+        # 就把它们打包成一个元组(描述, 网址)
         if url := images_url.get(image_file):
             image_infos[image_file] = (summary,url)
     logger.info(f"图片处理的汇总结果:{image_infos}")
+    # 最终汇总image_infos： {图片名 : (描述 , url地址)}
+    """
+    image_infos = {
+        "su7_door.jpg": (
+            "小米SU7半隐藏式门把手特写",         # 来自 summaries
+            "http://minio.../su7_door.jpg"   # 来自 images_url
+        ),
+        "su7_front.jpg": (
+            "水滴形矩阵LED大灯展示", 
+            "http://minio.../su7_front.jpg"
+        )
+    }
+    """
 
     if image_infos:
         """
         xxxx
         xxx  ![xx](图片地址/image_file) -> ![summary](minio的url)
-        xxx
+        xxxx
         """
+
         """
         rep.sub(新文本, 旧长文) 就像是 Word 里的“全部替换”功能。它扫描整篇 md_content：
         发现了旧代码：![原本的废话](/images/warning.png)。
@@ -406,17 +443,14 @@ def step_4_upload_images_and_replace_md(summaries, targets, md_content, stem):
         换成：![图中是一个红色的三角形警告标志...](http://192.168.1.100:9000/.../warning.png)
         """
         for image_file, (summary, url) in image_infos.items():
-            # 使用正则
+            # 使用正则扫描出旧的标签
             # ![](/xxx/xx/image_file) -> ![无所谓](无所谓image_file无所谓)
             rep = re.compile(r"!\[.*?\]\(.*?"+image_file+".*?\)")
+            # 把它替换成包含AI总结和云端地址的新标签：
+            # ![AI总结](公网URL)
             md_content = rep.sub(f"![{summary}]({url})", md_content)
         logger.info(f"已经完成md内容的替换，新的内容为:{md_content}")
-
-    """
-    函数执行完毕后，原本残缺不全、带有很多本地死链接的 md_content，
-    华丽转身变成了完美适配 AI 时代的新文本md_content返回去:
-    "...操作机器前请注意![图中是一个红色的三角形警告标志，中间画着一双正在冒烟的手。](http://192.168.1.100:9000/bucket/upload-images/hak180产品安全手册/warning.png)，否则可能引起烫伤。..."
-    """
+    # 把图片的内容替换完毕之后，在原md中全部替换新的图片内容
     return md_content
 
 
@@ -424,21 +458,23 @@ def step_5_replace_md_and_save(new_md_content, md_path_obj):
     """
     完成新的md的磁盘本分，并且返回老地址！
     新的命名  xxx_new.md
-    :param new_md_content: 新内容
+    :param new_md_content: -> 承接第四步的额返回值md_content
     :param md_path_obj: 老地址
     :return: 新地址
     """
-    # 设置下新的地址
-    #   c:/xxx/xxx/xxx/xxxx/erdaye.md -> splitext(md_path_obj)[0]
-    #   -》 c:/xxx/xxx/xxx/xxxx/erdaye _new.md
-    # 给新报告起个新名字 (os.path.splitext)
     # 系统在生成新文件时，为了不破坏原始文件（保留底稿以防万一），决定新建一个文件。
     # 这里的 os.path.splitext() 就像是一把“精准的手术刀”。
     # 它专门用来把文件路径里的**“名字”和“后缀名（扩展名）”**一刀切开
-    # new_md_path_str = "D:/project/output/hak180产品安全手册/hak180产品安全手册_new.md"
+    # md_path_obj = Path("/output/20260404/task_abc123/小米汽车SU7说明书/小米汽车SU7说明书.md")
+    # new_md_path_str = Path("/output/20260404/task_abc123/小米汽车SU7说明书/小米汽车SU7说明书_new.md")
+    # 给文件改名，加上 _new 后缀，以防覆盖原稿
+        # 当代码执行 os.path.splitext(md_path_obj)[0] + "_new.md" 时，
+        # 发生了一个隐式的降级操作： os.path 系列的老牌函数在处理 Path 对象时，会提取它的文本路径。
+        # 加上后面的字符串拼接 + "_new.md"，生成的结果就彻底变成了一个普通的字符串（比如 "D:/.../小米汽车SU7说明书_new.md"）
     new_md_path_str = os.path.splitext(md_path_obj)[0] + "_new.md"
     #当以 "w" 模式打开一个文件时，如果这个文件不存在，系统会立刻凭空创建一个空白文件；
     # 如果已经存在，系统会极其无情地把里面原来的内容全部清空
+    # 将包含云端链接和AI总结的全新文本，写入新文件
     with open(new_md_path_str, "w", encoding="utf-8") as f:
         # 就像是打印机一样，把内存里那段已经排版完美、带有 MinIO 链接和 AI 总结文本，刻录进硬盘
         f.write(new_md_content)
@@ -458,39 +494,46 @@ def node_md_img(state: ImportGraphState) -> ImportGraphState:
     3. (可选) 调用多模态模型生成图片描述。
     4. 替换 Markdown 中的图片链接为 MinIO URL。
     """
+    # 1. 自动获取当前工位名称："node_md_img"
     function_name = sys._getframe().f_code.co_name
     logger.info(f">>> [{function_name}]开始执行了！现在的状态为：{state}")
+    # 前端进度条点亮黄灯，显示正在处理
     add_running_task(state['task_id'], function_name)
-    # 1. 校验并且获取本次操作的数据
+
+    # 2. 呼叫step1，校验，并提取长文本、文件路径和图片文件夹路径
     #         参数： state  -> md_path md_content
-    #         响应： 1. 校验后的md_content  2.md路径对象  3. 获取图片的文件夹 images
+    #         响应： 1.校验后的md_content  2.md路径对象  3. 获取图片的文件夹 images
     md_content, md_path_obj, images_dir_obj = step_1_get_content(state)
-    # 如果没有图片，则直接返回 state
+    # 如果压根就没有 images 文件夹（比如这篇文档全是纯文字，根本没配图）-> 提前下班
+    # 如果说明书没有图，就不需要再去唤醒耗时又费钱的视觉大模型了
     if not images_dir_obj.exists():
         logger.info(f">>> [{function_name}]没有图片，直接返回 state ！")
         return state
-    # 2. 识别md中使用过的图片，采取做下一步（进行图片总结）
+
+    # 3. 识别md中使用过的图片 -> 把所有图片的上下文全给我揪出来！
     # targets->[(图片名,图片地址,(上文,下文 = 100))，(图片名,图片地址,(上文,下文 = 100))，(图片名,图片地址,(上文,下文 = 100))]
     targets = step_2_scan_images(md_content, images_dir_obj)
-    #         参数： 1. md_content 2. images图片的文件夹地址
-    #         响应： [(图片名,图片地址,(上文,下文))]
-    # 3. 进行图片内容的总结和处理 （视觉模型）
-    # 参数： 第二次的响应 [(图片名,图片地址,(上文,下文))]   || md文件的名称（提示词中 md文件名就是存储图片images的文件名）
-    # 响应： {图片名:总结,图片名:总结,图片名:总结}
+    #     参数： 1. md_content 2. images图片的文件夹地址
+    #     响应： targets = [(图片名,图片地址,(上文,下文))]
+
+    # 4. 进行图片内容的总结和处理 （视觉模型）
+    # 参数： 1.第二次的响应 [(图片名,图片地址,(上文,下文))] 2.md文件的名称（提示词中 md文件名就是存储图片images的文件名）
+    # 响应： summaries = {图片名:总结,图片名:总结,图片名:总结}
     summaries = step_3_generate_img_summaries(targets, md_path_obj.stem)
-    # 4. 上传图片到minio同时替换md中的图片 （描述 + url地址）
-    #         参数：minio_client || {图片名:总结,......} || [(图片名,图片地址,(上文,下文))] (minio) || md_content 旧 || md文件的名称（提示词中 md文件名就是存储图片images的文件名）
+
+    # 5. 上传图片到minio同时替换md中的图片内容为（描述 + url地址）
+    #         参数：1.{图片名:总结,......} 2.[(图片名,图片地址,(上文,下文))] (minio) 3.md_content 旧 4.md文件的名称
     #         响应：new_md_content
-    #         state[md_content] = new_md_content
     new_md_content = step_4_upload_images_and_replace_md(summaries, targets, md_content, md_path_obj.stem)
 
-    # 5. 新的md内容替换和保存修改装
-    #  参数：new_md_content , 原md地址 -》 xx.md -> xx_new.md
+    # 6. 新的md内容替换和保存修改装 -> _new
+    #  参数：new_md_content , 原md地址 -> xx.md -> xx_new.md
     #  响应：新的md的地址 new_md_path
-    #  state[md_path] = new_md_path_str
     new_md_file_path = step_5_replace_md_and_save(new_md_content, md_path_obj)
-    #  md_path -> 新的地址
-    #  md_content -> 新的内容
+    #  md_path -> 新的地址：new_md_file_path
+    #  md_content -> 新的内容 ：new_md_content
+    # new_md_file_path（step5返回值） = "/output/20260404/task_abc123/小米汽车SU7说明书/小米汽车SU7说明书_new.md"（字符串）
+    # new_md_content（step4返回值）：原md中图片的内容替换完毕后的，图片的新内容
     state["md_path"] = new_md_file_path
     state["md_content"] = new_md_content
     logger.info(f">>> [{function_name}]开始结束了！现在的状态为：{state}")

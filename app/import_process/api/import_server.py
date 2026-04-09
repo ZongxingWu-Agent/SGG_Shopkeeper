@@ -65,7 +65,7 @@ def run_import_graph(task_id: str, local_file_path: str, local_dir: str):
     # _tasks_done_list: Dict[str, List[str]] = {}
     # key=task_id 本次上传文件任务的唯一标识
     # value = list [文件上传，检查文件 节点名字] （正在进行 | 已经完成）
-    add_done_task(task_id, "upload_file")
+    # add_done_task(task_id, "upload_file")
     add_running_task(task_id, "upload_file")
     try:
         # 本次任务的总状态
@@ -85,6 +85,7 @@ def run_import_graph(task_id: str, local_file_path: str, local_dir: str):
                 # add_done_task(task_id, node_name)
         update_task_status(task_id,"completed")
         logger.info(f"{task_id}:图状态执行完毕！！")
+        add_done_task(task_id, "upload_file")
     except Exception as e:
         logger.exception("====图执行失败！发生异常====")
         update_task_status(task_id, "failed")
@@ -138,11 +139,8 @@ async def upload_file(background_tasks: BackgroundTasks,
     }
 
 
-# --------------------------
-# 核心接口：任务状态查询接口
-# 前端轮询此接口获取单个任务的处理进度和状态
+
 # 访问地址：http://localhost:8000/status/{task_id} （GET请求）
-# --------------------------
 @app.get("/status/{task_id}", summary="任务状态查询", description="根据TaskID查询单个文件的处理进度和全局状态")
 async def get_task_progress(task_id: str):
     """

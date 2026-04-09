@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件导入服务 - 知识库</title>
+    <style>
+        :root {
+            /* 苹果设计规范色彩 */
+            --apple-bg: #f5f5f7;
+            --apple-text: #1d1d1f;
+            --apple-text-secondary: #86868b;
+            --apple-blue: #0071e3;
+            --apple-blue-hover: #0077ed;
+            --apple-green: #34c759;
+            --apple-orange: #ff9500;
+            --apple-red: #ff3b30;
+            --glass-bg: rgba(255, 255, 255, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.5);
+        }
+
+        body {
+            /* 优先使用苹果系统字体 */
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            background-color: var(--apple-bg);
+            color: var(--apple-text);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+            position: relative;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* 背景氛围光晕，凸显毛玻璃效果 */
+        body::before {
+            content: "";
+            position: fixed;
+            top: -10%; left: -10%;
+            width: 50vw; height: 50vw;
+            border-radius: 50%;
+            background: var(--apple-blue);
+            filter: blur(120px);
+            opacity: 0.08;
+            z-index: -1;
+        }
+        body::after {
+            content: "";
+            position: fixed;
+            bottom: -10%; right: -10%;
+            width: 40vw; height: 40vw;
+            border-radius: 50%;
+            background: var(--apple-green);
+            filter: blur(120px);
+            opacity: 0.08;
+            z-index: -1;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 760px;
+            /* 毛玻璃效果核心 */
+            background: var(--glass-bg);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            padding: 48px;
+            border-radius: 28px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.02);
+            align-self: flex-start;
+            margin-top: 4vh;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            margin-top: 0;
+            margin-bottom: 40px;
+            color: var(--apple-text);
+        }
+
+        .upload-area {
+            background: rgba(255, 255, 255, 0.5);
+            border: 2px dashed #d2d2d7;
+            border-radius: 20px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            margin-bottom: 32px;
+        }
+
+        .upload-area:hover {
+            background: rgba(255, 255, 255, 0.9);
+            border-color: var(--apple-blue);
+            transform: scale(1.01);
+            box-shadow: 0 10px 20px rgba(0, 113, 227, 0.06);
+        }
+
+        .upload-icon {
+            font-size: 56px;
+            margin-bottom: 16px;
+            display: inline-block;
+            transition: transform 0.3s;
+        }
+
+        .upload-area:hover .upload-icon {
+            transform: translateY(-4px);
+        }
+
+        .upload-area p {
+            margin: 0;
+            font-size: 17px;
+            font-weight: 500;
+            color: var(--apple-text-secondary);
+        }
+
+        .file-input { display: none; }
+
+        .file-list {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .file-item {
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 16px;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border: 1px solid rgba(0,0,0,0.04);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+            transition: transform 0.2s;
+        }
+
+        .file-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.05);
+        }
+
+        .file-info {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            margin-right: 24px;
+            overflow: hidden;
+        }
+
+        .file-name {
+            font-weight: 600;
+            font-size: 16px;
+            color: var(--apple-text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-size {
+            font-size: 13px;
+            color: var(--apple-text-secondary);
+            margin-top: 6px;
+            font-weight: 500;
+        }
+
+        /* 状态胶囊 */
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 980px; /* 胶囊形状 */
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            min-width: 70px;
+            text-align: center;
+            flex-shrink: 0;
+            border: 1px solid transparent;
+        }
+
+        /* 重新定义状态颜色 - 采用浅色背景+深色字的苹果风格 */
+        .status-uploading {
+            background-color: #fff8e6;
+            color: var(--apple-orange);
+            border-color: rgba(255, 149, 0, 0.2);
+        }
+        .status-processing {
+            background-color: #eaf2ff;
+            color: var(--apple-blue);
+            border-color: rgba(0, 113, 227, 0.2);
+        }
+        .status-completed {
+            background-color: #eaffec;
+            color: var(--apple-green);
+            border-color: rgba(52, 199, 89, 0.2);
+        }
+        .status-error {
+            background-color: #ffeceb;
+            color: var(--apple-red);
+            border-color: rgba(255, 59, 48, 0.2);
+        }
+
+        /* 进度条美化 */
+        .progress-bar-container {
+            width: 100%;
+            height: 6px;
+            background-color: #e5e5ea;
+            margin-top: 14px;
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-bar {
+            height: 100%;
+            background-color: var(--apple-orange);
+            width: 0%;
+            transition: width 0.4s ease, background-color 0.4s ease;
+            border-radius: 3px;
+        }
+
+        /* 日志美化 */
+        .log-details {
+            margin-top: 14px;
+            font-size: 13px;
+            color: var(--apple-text-secondary);
+            background: rgba(0,0,0,0.02);
+            border-radius: 10px;
+            padding: 2px;
+        }
+        .log-details summary {
+            cursor: pointer;
+            user-select: none;
+            color: var(--apple-blue);
+            font-weight: 500;
+            padding: 8px 12px;
+            border-radius: 8px;
+            outline: none;
+            transition: background-color 0.2s;
+        }
+        .log-details summary:hover {
+            background-color: rgba(0, 113, 227, 0.08);
+        }
+        .log-details summary::-webkit-details-marker {
+            display: none;
+        }
+        .log-list {
+            margin: 0;
+            padding: 8px 12px 12px 28px;
+            list-style-type: disc;
+        }
+        .log-list li {
+            margin: 6px 0;
+            line-height: 1.5;
+            color: #6e6e73;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📄 知识库文件导入</h1>
+
+    <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-icon">☁️</div>
+        <p>点击或拖拽文件到此处 (PDF/MD)</p>
+        <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.md">
+    </div>
+
+    <div id="fileList" class="file-list">
+        </div>
+</div>
+
+<script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileList = document.getElementById('fileList');
+
+    // 模拟后端API地址
+    const API_BASE = 'http://127.0.0.1:8000';
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        dropZone.style.borderColor = '#0071e3';
+        dropZone.style.transform = 'scale(1.01)';
+    });
+
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.style.backgroundColor = '';
+        dropZone.style.borderColor = '';
+        dropZone.style.transform = '';
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.backgroundColor = '';
+        dropZone.style.borderColor = '';
+        dropZone.style.transform = '';
+        handleFiles(e.dataTransfer.files);
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        handleFiles(e.target.files);
+    });
+
+    function handleFiles(files) {
+        Array.from(files).forEach(uploadFile);
+    }
+
+    function updateProgressBar(bar, percentage) {
+        bar.style.width = percentage + '%';
+        if (percentage >= 100) {
+            bar.style.backgroundColor = '#0071e3'; // 统一为苹果蓝
+        } else {
+            bar.style.backgroundColor = '#ff9500'; // 统一为苹果橙
+        }
+    }
+
+    async function uploadFile(file) {
+        // 创建文件项UI
+        const id = 'file-' + Math.random().toString(36).substr(2, 9);
+        const html = `
+            <div class="file-item" id="${id}">
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${(file.size / 1024).toFixed(2)} KB</span>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar"></div>
+                    </div>
+                    <details class="log-details">
+                        <summary>日志（点击展开）</summary>
+                        <ul class="log-list"></ul>
+                    </details>
+                </div>
+                <div class="status-badge status-uploading">上传中...</div>
+            </div>
+        `;
+        fileList.insertAdjacentHTML('afterbegin', html);
+        const itemEl = document.getElementById(id);
+        const statusBadge = itemEl.querySelector('.status-badge');
+        const progressBar = itemEl.querySelector('.progress-bar');
+        const progressContainer = itemEl.querySelector('.progress-bar-container');
+        const logDetails = itemEl.querySelector('.log-details');
+        const logSummary = itemEl.querySelector('.log-details summary');
+        const logListEl = itemEl.querySelector('.log-list');
+
+        // 构建FormData
+        const formData = new FormData();
+        formData.append('files', file);
+
+        try {
+            // 1. 上传文件
+            progressContainer.style.display = 'block';
+            // 模拟上传进度
+            updateProgressBar(progressBar, 50);
+
+            const response = await fetch(`${API_BASE}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) throw new Error('Upload failed');
+
+            const result = await response.json();
+            const taskId = result.task_ids[0]; // 假设一次传一个或取第一个
+
+            // 上传完成，进入处理中，进度固定为30%
+            updateProgressBar(progressBar, 30);
+            statusBadge.textContent = '处理中...';
+            statusBadge.className = 'status-badge status-processing';
+
+            // 2. 轮询状态
+            pollStatus(taskId, itemEl);
+
+        } catch (error) {
+            console.error(error);
+            statusBadge.textContent = '失败';
+            statusBadge.className = 'status-badge status-error';
+        }
+    }
+
+    function normalizeDoneLog(text) {
+        if (typeof text !== 'string') return String(text);
+        return text.endsWith('已完成') ? text : `${text}已完成`;
+    }
+
+    function normalizeRunningLog(text) {
+        if (typeof text !== 'string') return String(text);
+        if (text.startsWith('正在进行')) return text.endsWith('...') ? text : `${text}...`;
+        return `正在进行${text}...`;
+    }
+
+    function renderLogs(itemEl, doneList, runningList) {
+        const logSummary = itemEl.querySelector('.log-details summary');
+        const logListEl = itemEl.querySelector('.log-list');
+        const logDetails = itemEl.querySelector('.log-details');
+
+        const done = Array.isArray(doneList) ? doneList : [];
+        const running = Array.isArray(runningList) ? runningList : [];
+
+        logSummary.textContent = `查看日志（已完成 ${done.length}，进行中 ${running.length}）`;
+
+        logListEl.innerHTML = '';
+        const lines = [
+            ...done.map(normalizeDoneLog),
+            ...running.map(normalizeRunningLog),
+        ];
+
+        if (lines.length === 0) {
+            const li = document.createElement('li');
+            li.textContent = '暂无日志';
+            logListEl.appendChild(li);
+        } else {
+            for (const line of lines) {
+                const li = document.createElement('li');
+                li.textContent = line;
+                logListEl.appendChild(li);
+            }
+        }
+
+        if (lines.length === 0) {
+            logDetails.open = false;
+        }
+    }
+
+    function pollStatus(taskId, itemEl) {
+        const statusBadge = itemEl.querySelector('.status-badge');
+        const progressBar = itemEl.querySelector('.progress-bar');
+
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch(`${API_BASE}/status/${taskId}`);
+                const data = await res.json();
+
+                renderLogs(itemEl, data.done_list, data.running_list);
+
+                if (data.status === 'completed') {
+                    statusBadge.textContent = '已完成';
+                    statusBadge.className = 'status-badge status-completed';
+                    updateProgressBar(progressBar, 100);
+                    clearInterval(interval);
+                } else if (data.status === 'processing') {
+                    statusBadge.textContent = '处理中...';
+                     updateProgressBar(progressBar, 30);
+                } else if (data.status === 'failed') {
+                    statusBadge.textContent = '失败';
+                    statusBadge.className = 'status-badge status-error';
+                    clearInterval(interval);
+                }
+            } catch (e) {
+                console.error('Polling error', e);
+            }
+        }, 2000);
+    }
+</script>
+
+</body>
+</html>

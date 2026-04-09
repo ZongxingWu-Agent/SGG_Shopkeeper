@@ -26,7 +26,7 @@ MIN_CONTENT_LENGTH = 500  # 最小的长度
    4. 细粒度切割（md）大小和重叠合适 -> 大 -》（设置重叠） 小 || 小 -》 合并  （大 -》 小 || 小 -》 合并）
       大小合适，语义完整的chunks 
    5. 数据的备份和chunks属性的修改 (chunks -> state  | chunks -> 本地备份一下)
-   返回 state 
+   返回 state
 """
 
 
@@ -37,14 +37,15 @@ def step_1_get_content(state):
         logger.error(f"[step_1_get_content]没有有效的md内容，直接抛出异常！！！！")
         raise Exception("请检查输入文件路径是否正确！！")
     # 处理md_content中的换行符号
+    # 为了防止不同电脑（Windows/Mac/Linux）的换行符（\r\n 或 \r）捣乱，
+    # 代码把它们全部统一替换成了标准的 \n
     """
         window \r\n
         linux/mac \n
         老mac   \r
     """
-    # 为了防止不同电脑（Windows/Mac/Linux）的换行符（\r\n 或 \r）捣乱，
-    # 代码把它们全部统一替换成了标准的 \n
     md_content = md_content.replace('\r\n', '\n').replace('\r', '\n')
+    # 提取文件标题作为元数据兜底
     file_title = state.get("file_title", "default_file")
     return md_content, file_title
 
@@ -90,37 +91,40 @@ def step_2_split_by_title(md_content, file_title):
     # \s+  + 1->n   #### 标题名
     # .+ .任意字符串 + 1->n   [空格]###[空格]标题描述
     # 寻找文本里的 Markdown 标题
+    # 定义正则表达式，专门抓取 Markdown 的标题语法（1到6个#号开头，加空格，加文字）
     title_pattern = r'^\s*#{1,6}\s+.+'
-    # 1.2 md_content切割 \n  【】
+    # 1.2 md_content切割 \n
+    # 按行把文本拆成一个大列表
     lines = md_content.split('\n')
     # 1.3 定义临时存储变量  current_title = str | current_lines = [] | title_count = 0 存储了多少块
     #                    is_code_block = bool False 是不是代码块
     current_title = ""
     current_lines = []  # 当前标题行
     title_count = 0
-    is_code_block = False
+    is_code_block = False  # 核心状态标识：是否在代码块内部
     # 1.4 最终存储的列表  sections = []
-    sections = []
+    sections = []  # 最终装粗切肉块的盆子
 
     # 2. 循环每行的列表
     for line in lines:
         # 切掉字符串开头和结尾的空白字符,因为前面有空格会判断失败
         strip_line = line.strip()
-        # 2.1 判断代码块状态
+        # 【防误切核心逻辑】：如果碰到 ``` 或者 ~~~，说明进入了代码块
+        # 代码块里面的注释（比如 # 这是一个循环）很容易被正则误认成标题！
         if strip_line.startswith('```') or strip_line.startswith('~~~'):
             # 进入代码块 或者 退出代码块
             # 第一次来一定进入代码块
-            is_code_block = not is_code_block  # 取反即可
+            is_code_block = not is_code_block  # 状态翻转（进门/出门）
             # 内容一定不是标题
             current_lines.append(line)
             continue
-        # 2.2 判断是不是标题
+        # 如果不是在代码块里，并且匹配到了标题正则，那么它才是真标题
         is_title = (not is_code_block) and re.match(title_pattern, strip_line)  # 是不是标题 【还用不用考虑代码块问题】
 
         if is_title:
             # 先检查（是不是第一次）只要不是第一次，就应该先存储
             # 如果不想要空标题  current不为空 and  current_lines 长度大于1
-            if current_title:
+            if current_title:  # 如果不是第一行，说明上一块肉已经切完了，装进盆里
                 sections.append({
                     "title": current_title,
                     "content": "\n".join(current_lines),
@@ -128,14 +132,15 @@ def step_2_split_by_title(md_content, file_title):
                 })
             # 如果是标题 可能1  2  3 4 5 6 7 8
             # 2.3 是标题怎么处理
+            # 开启新的一块肉
             current_title = strip_line  # 标题名称
             current_lines = [current_title]
             title_count += 1  # 标题数量+1
         else:
-            # 2.4 不是标题怎么处理
+            # 不是标题，就是正文内容，直接追加到当前的肉块里
             current_lines.append(line)
 
-    # 最后一个标题的内容保存
+    # 最后一个标题的内容保存，循环结束，把最后一块还在案板上的肉装进盆里
     if current_title:
         sections.append({
             "title": current_title,
